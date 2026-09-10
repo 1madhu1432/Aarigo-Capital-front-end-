@@ -68,6 +68,7 @@ function CustomersPage() {
   const [form, setForm] = useState<NewCustomerInput>(defaultForm);
   const [formStep, setFormStep] = useState(1);
   const [newCustomerId, setNewCustomerId] = useState<string | null>(null);
+  const [guarantorSameAsNominee, setGuarantorSameAsNominee] = useState(true);
 
   useEffect(() => {
     const p = new URLSearchParams(location.searchStr);
