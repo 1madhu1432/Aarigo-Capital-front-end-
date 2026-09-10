@@ -740,21 +740,42 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       setAccounts((prev) => [account, ...prev]);
 
       // Asynchronously sync with backend REST API
+      const cleanAddress = [customer.address.house, customer.address.area, customer.address.landmark]
+        .map((s) => (s || "").trim())
+        .filter(Boolean)
+        .join(", ") || "Main Street";
+
       customerApi
         .createCustomer({
-          fullName: customer.name,
-          mobile: customer.mobile,
-          alternateMobile: customer.altMobile || undefined,
-          address: `${customer.address.house || ""}, ${customer.address.area || ""}`,
-          city: customer.address.city || "Pune",
-          state: customer.address.state || "Maharashtra",
-          pincode: customer.address.pincode || customer.address.pin || "411001",
-          occupation: customer.occupation || undefined,
+          fullName: customer.name.trim(),
+          mobile: customer.mobile.trim(),
+          alternateMobile: customer.altMobile?.trim() || undefined,
+          address: cleanAddress,
+          city: (customer.address.city || "Pune").trim(),
+          state: (customer.address.state || "Maharashtra").trim(),
+          pincode: (customer.address.pincode || customer.address.pin || "411001").trim(),
+          occupation: customer.occupation?.trim() || undefined,
           monthlyIncome: customer.monthlyIncome || undefined,
           kycType: customer.kycType as any,
-          kycNumber: customer.kycNumber || undefined,
-          guarantorName: customer.guarantor?.name || undefined,
-          guarantorMobile: customer.guarantor?.mobile || undefined,
+          kycNumber: customer.kycNumber?.trim() || undefined,
+          guarantorName: customer.guarantor?.name?.trim() || undefined,
+          guarantorMobile: customer.guarantor?.mobile?.trim() || undefined,
+          guarantorRelationship: customer.guarantor?.relationship?.trim() || undefined,
+          guarantorAddress: customer.guarantor?.address?.trim() || undefined,
+        })
+        .then((res) => {
+          if (res?.data) {
+            const dbCust = res.data as any;
+            const realId = dbCust.customerCode || dbCust.id;
+            if (realId && realId !== customer.id) {
+              setCustomers((prev) =>
+                prev.map((c) => (c.id === customer.id ? { ...c, id: realId } : c))
+              );
+              setAccounts((prev) =>
+                prev.map((a) => (a.customerId === customer.id ? { ...a, customerId: realId } : a))
+              );
+            }
+          }
         })
         .catch((err) => {
           console.warn("Backend customer sync pending:", err?.message);
