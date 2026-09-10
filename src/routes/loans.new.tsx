@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Search, CheckCircle2, AlertTriangle, CreditCard, Calendar, Clock } from "lucide-react";
+import { toast } from "sonner";
 import { useStore } from "@/store/app-store";
 import type { NewLoanInput } from "@/store/app-store";
 import { inr, fmtDate, todayISO, addMonths, addDays, generateEmiDates, safe } from "@/lib/format";
@@ -182,10 +183,21 @@ function NewLoanPage() {
     return Object.keys(e).length === 0;
   };
 
-  const handleSubmit = () => {
-    const loan = addLoan({ ...form, customerId: selectedCustomerId });
-    setNewLoanId(loan.id);
-    setStep(5);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    try {
+      setIsSubmitting(true);
+      const loan = await addLoan({ ...form, customerId: selectedCustomerId });
+      setNewLoanId(loan.id);
+      setStep(5);
+      toast.success("Loan created and persisted to database!");
+    } catch (err: any) {
+      console.error("Failed to create loan:", err);
+      toast.error(err?.message || "Failed to create loan in database");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const setField = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => {
@@ -608,8 +620,8 @@ function NewLoanPage() {
             </div>
             <div className="flex gap-2">
               <Button size="sm" variant="outline" className="text-xs cursor-pointer" onClick={() => setStep(3)}>Back</Button>
-              <Button size="sm" className="text-xs flex-1 cursor-pointer bg-primary" onClick={handleSubmit}>
-                Create Loan & Generate EMI Schedule
+              <Button size="sm" className="text-xs flex-1 cursor-pointer bg-primary" disabled={isSubmitting} onClick={handleSubmit}>
+                {isSubmitting ? "Creating Loan in Database..." : "Create Loan & Generate EMI Schedule"}
               </Button>
             </div>
           </CardContent>

@@ -11,6 +11,7 @@ import {
   X,
   CheckCircle2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useStore } from "@/store/app-store";
 import type { NewCustomerInput } from "@/store/app-store";
 import { inr, fmtDate } from "@/lib/format";
@@ -190,16 +191,25 @@ interface CustomerFormErrors {
     else if (formStep === 3 && validateStep3()) setFormStep(4);
   };
 
-  const [guarantorSameAsNominee, setGuarantorSameAsNominee] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const finalForm = {
       ...form,
       guarantor: guarantorSameAsNominee ? { ...form.nominee } : form.guarantor,
     };
-    const result = addCustomer(finalForm);
-    setNewCustomerId(result.customer.id);
-    setFormStep(5); // Success step
+    try {
+      setIsSubmitting(true);
+      const result = await addCustomer(finalForm);
+      setNewCustomerId(result.customer.id);
+      setFormStep(5); // Success step
+      toast.success("Customer added successfully and saved to database!");
+    } catch (err: any) {
+      console.error("Failed to create customer:", err);
+      toast.error(err?.message || "Failed to create customer in database");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleCloseDialog = () => {
@@ -823,9 +833,10 @@ interface CustomerFormErrors {
               <Button
                 size="sm"
                 className="text-xs flex-1 cursor-pointer"
+                disabled={isSubmitting}
                 onClick={formStep === 4 ? handleSubmit : handleNext}
               >
-                {formStep === 4 ? "Confirm & Add Customer" : "Next"}
+                {formStep === 4 ? (isSubmitting ? "Saving to Database..." : "Confirm & Add Customer") : "Next"}
               </Button>
             </div>
           )}

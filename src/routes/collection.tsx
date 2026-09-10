@@ -25,6 +25,7 @@ import {
   Lock,
   Unlock,
 } from "lucide-react";
+import { toast } from "sonner";
 import { collectionPriorityScore, resolveCurrentEmi, useStore } from "@/store/app-store";
 import { inr, fmtDate, fmtDateTime, todayISO, addDays } from "@/lib/format";
 import type { PaymentMethod, Receipt, VisitStatus } from "@/types";
@@ -318,29 +319,36 @@ function CollectionPage() {
     }
   };
 
-  const handleRecordPayment = useCallback(() => {
+  const handleRecordPayment = useCallback(async () => {
     if (!selectedCustomer || !activeLoan || !targetEmi) return;
     const amt = parseFloat(payAmount);
     if (!amt || amt <= 0) return;
 
-    setIsSubmitting(true);
-    const res = recordPayment({
-      customerId: selectedCustomer.id,
-      loanId: activeLoan.id,
-      emiId: targetEmi.id,
-      amount: amt,
-      method: payMethod,
-      notes: payNotes,
-      excessAction,
-      lateFeePaid: itemizedSplit.lateFeePaid,
-      lateFeeWaived: waiveLateFee,
-    });
+    try {
+      setIsSubmitting(true);
+      const res = await recordPayment({
+        customerId: selectedCustomer.id,
+        loanId: activeLoan.id,
+        emiId: targetEmi.id,
+        amount: amt,
+        method: payMethod,
+        notes: payNotes,
+        excessAction,
+        lateFeePaid: itemizedSplit.lateFeePaid,
+        lateFeeWaived: waiveLateFee,
+      });
 
-    setLastReceipt(res.receipt);
-    setShowConfirm(false);
-    setShowOverpayDialog(false);
-    setStep(5);
-    setIsSubmitting(false);
+      setLastReceipt(res.receipt);
+      setShowConfirm(false);
+      setShowOverpayDialog(false);
+      setStep(5);
+      toast.success("Payment recorded and saved to database!");
+    } catch (err: any) {
+      console.error("Failed to record payment:", err);
+      toast.error(err?.message || "Failed to record payment in database");
+    } finally {
+      setIsSubmitting(false);
+    }
   }, [selectedCustomer, activeLoan, targetEmi, payAmount, payMethod, payNotes, excessAction, itemizedSplit.lateFeePaid, waiveLateFee, recordPayment]);
 
   const handleSaveNoPaymentVisit = useCallback(() => {

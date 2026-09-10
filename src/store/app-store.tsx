@@ -46,28 +46,17 @@ import type {
 } from "@/types";
 import { computeAmortizationSchedule } from "@/utils/amortization";
 
-// ─── localStorage persistence ──────────────────────────────────────────────
-const STORAGE_KEY = "aarigo-capital-store-v2";
-
-interface PersistedState {
-  customers: Customer[];
-  accounts: Account[];
-  loans: Loan[];
-  emis: Emi[];
-  payments: Payment[];
-  receipts: Receipt[];
-  visits: Visit[];
-  limitHistory: CreditLimitChange[];
-  documents: DocumentFile[];
-  bankDetails?: BankDetail[];
-  disbursements?: DisbursementRecord[];
-  promiseToPay: PromiseToPay[];
-  earlyClosures?: EarlyClosureRecord[];
-  dailyClosings?: DailyClosing[];
-  counters: CounterState;
-  admin: AdminProfile;
-  settings: Settings;
+// ─── Legacy localStorage cleanup ──────────────────────────────────────────
+function cleanLegacyStorage(): void {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return;
+    localStorage.removeItem("loanflow-hub-store-v1");
+    localStorage.removeItem("aarigo-capital-store-v2");
+  } catch {
+    // Ignore
+  }
 }
+cleanLegacyStorage();
 
 const EMPTY_STORE_DATA = {
   customers: [] as Customer[],
@@ -85,52 +74,6 @@ const EMPTY_STORE_DATA = {
   earlyClosures: [] as EarlyClosureRecord[],
   dailyClosings: [] as DailyClosing[],
 };
-
-function loadStoredState(): PersistedState | null {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return null;
-    // Clear legacy mock data key from localStorage
-    localStorage.removeItem("loanflow-hub-store-v1");
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw) as PersistedState;
-    if (!Array.isArray(data?.customers)) return null;
-
-    // Ensure customers who have NOT taken a loan do not retain stray loan documents
-    if (Array.isArray(data.documents) && Array.isArray(data.loans)) {
-      const customerIdsWithLoans = new Set(data.loans.map((l) => l.customerId));
-      data.documents = data.documents.filter((d) => {
-        if (d.category === "LOAN_DOCUMENTS" && !customerIdsWithLoans.has(d.customerId)) {
-          return false;
-        }
-        return true;
-      });
-    }
-
-    // Ensure unpaid EMIs of closed / early closed loans are marked as Cancelled
-    if (Array.isArray(data.loans) && Array.isArray(data.emis)) {
-      const closedLoanIds = new Set(
-        data.loans
-          .filter((l) => l.status === "Closed" || l.status === "Closed Early" || Boolean(l.earlyClosure))
-          .map((l) => l.id)
-      );
-      data.emis = data.emis.map((e) => {
-        if (closedLoanIds.has(e.loanId) && e.status !== "Paid" && e.paid < e.amount) {
-          return {
-            ...e,
-            status: "Cancelled",
-            remarks: e.remarks || "Cancelled - Early Closure",
-          };
-        }
-        return e;
-      });
-    }
-
-    return data;
-  } catch {
-    return null;
-  }
-}
 
 // ─── Counter shape ─────────────────────────────────────────────────────────
 interface CounterState {
@@ -251,11 +194,13 @@ interface StoreValue {
   closeDay: (input: { date: string; notes?: string; status?: "Closed" | "Audited" }) => DailyClosing;
   reopenDay: (date: string) => void;
 
-  addCustomer: (input: NewCustomerInput) => { customer: Customer; account: Account };
+  addCustomer: (input: NewCustomerInput) => Promise<{ customer: Customer; account: Account }>;
   updateCustomer: (id: string, patch: Partial<Customer>) => void;
   updateCustomerPhoto: (id: string, photoDataUrl: string) => void;
-  addLoan: (input: NewLoanInput) => Loan;
-  recordPayment: (input: PaymentInput) => { payment: Payment; receipt: Receipt };
+  addLoan: (input: NewLoanInput) => Promise<Loan>;
+  recordPayment: (input: PaymentInput) => Promise<{ payment: Payment; receipt: Receipt }>;
+  refreshData: () => Promise<void>;
+  loading: boolean;
   reversePayment: (paymentId: string, reason: string) => void;
   updateCreditLimit: (accountId: string, newLimit: number, reason: string) => void;
   upsertVisit: (visit: Partial<Visit> & { id?: string; customerId: string; loanId: string }) => Visit;
@@ -285,11 +230,8 @@ const StoreContext = createContext<StoreValue | null>(null);
 export function AppStoreProvider({ children }: { children: ReactNode }) {
   const today = todayISO();
 
-  // ── Load initial state (localStorage or clean empty state) ────────────────
-  const stored = loadStoredState();
-  const seed = stored ?? EMPTY_STORE_DATA;
-
   const [loggedIn, setLoggedIn] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   // Define logout function to clear auth and reset store
   const logout = useCallback(() => {
@@ -376,322 +318,267 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       setLoggedIn(false);
     }
   }, []);
-  const [customers, setCustomers] = useState<Customer[]>(seed.customers);
-  const [accounts, setAccounts] = useState<Account[]>(seed.accounts);
-  const [loans, setLoans] = useState<Loan[]>(seed.loans);
-  const [emis, setEmis] = useState<Emi[]>(seed.emis);
-  const [payments, setPayments] = useState<Payment[]>(seed.payments);
-  const [receipts, setReceipts] = useState<Receipt[]>(seed.receipts);
-  const [visits, setVisits] = useState<Visit[]>(seed.visits);
-  const [limitHistory, setLimitHistory] = useState<CreditLimitChange[]>(seed.limitHistory);
-  const [documents, setDocuments] = useState<DocumentFile[]>(seed.documents);
-  const [bankDetails, setBankDetails] = useState<BankDetail[]>(stored?.bankDetails ?? []);
-  const [disbursements, setDisbursements] = useState<DisbursementRecord[]>(stored?.disbursements ?? []);
-  const [promiseToPay, setPromiseToPay] = useState<PromiseToPay[]>(
-    (stored as PersistedState & { promiseToPay?: PromiseToPay[] })?.promiseToPay ?? [],
-  );
-  const [earlyClosures, setEarlyClosures] = useState<EarlyClosureRecord[]>(
-    (stored as PersistedState & { earlyClosures?: EarlyClosureRecord[] })?.earlyClosures ?? [],
-  );
-  const [dailyClosings, setDailyClosings] = useState<DailyClosing[]>(
-    (stored as PersistedState & { dailyClosings?: DailyClosing[] })?.dailyClosings ??
-      (seed as typeof seed & { dailyClosings?: DailyClosing[] }).dailyClosings ??
-      [],
-  );
-  const [admin, setAdmin] = useState<AdminProfile>(stored?.admin ?? defaultAdmin);
-  const [settings, setSettings] = useState<Settings>(stored?.settings ?? defaultSettings);
-  const [counters, setCounters] = useState<CounterState>(stored?.counters ?? DEFAULT_COUNTERS);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [loans, setLoans] = useState<Loan[]>([]);
+  const [emis, setEmis] = useState<Emi[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [visits, setVisits] = useState<Visit[]>([]);
+  const [limitHistory, setLimitHistory] = useState<CreditLimitChange[]>([]);
+  const [documents, setDocuments] = useState<DocumentFile[]>([]);
+  const [bankDetails, setBankDetails] = useState<BankDetail[]>([]);
+  const [disbursements, setDisbursements] = useState<DisbursementRecord[]>([]);
+  const [promiseToPay, setPromiseToPay] = useState<PromiseToPay[]>([]);
+  const [earlyClosures, setEarlyClosures] = useState<EarlyClosureRecord[]>([]);
+  const [dailyClosings, setDailyClosings] = useState<DailyClosing[]>([]);
+  const [admin, setAdmin] = useState<AdminProfile>(defaultAdmin);
+  const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [counters, setCounters] = useState<CounterState>(DEFAULT_COUNTERS);
 
   // ── Authoritative Backend Synchronization ─────────────────────────────────
-  // When authenticated, query production backend REST APIs to populate live data
-  useEffect(() => {
-    if (!loggedIn) return;
+  const refreshData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [custRes, loanRes, payRes, visitRes, closingRes, rctRes] = await Promise.allSettled([
+        customerApi.getCustomers({ limit: 1000 }),
+        loanApi.getLoans({ limit: 1000 }),
+        paymentApi.getPayments({ limit: 1000 }),
+        visitsApi.getVisits({ limit: 1000 }),
+        dailyClosingApi.getDailyClosings({ limit: 100 }),
+        receiptsApi.getReceipts({ limit: 1000 }),
+      ]);
 
-    let isMounted = true;
+      // 1. Sync Customers & Accounts
+      if (custRes.status === "fulfilled" && Array.isArray(custRes.value.data)) {
+        const rawCustomers = custRes.value.data as any[];
+        const mappedCustomers: Customer[] = rawCustomers.map((c, idx) => ({
+          id: c.customerCode || c.id,
+          name: c.fullName || c.name || "Unnamed",
+          guardianName: c.guardianName || "",
+          mobile: c.mobile || "",
+          altMobile: c.alternateMobile || c.altMobile || "",
+          dob: c.dateOfBirth || c.dob || "",
+          gender: c.gender === "FEMALE" ? "Female" : c.gender === "OTHER" ? "Other" : "Male",
+          occupation: c.occupation || "Employed",
+          monthlyIncome: Number(c.monthlyIncome) || 0,
+          address: {
+            house: c.addressHouse || "",
+            area: c.addressArea || (typeof c.address === "string" ? c.address : ""),
+            city: c.city || "Pune",
+            district: c.district || "Pune",
+            state: c.state || "Maharashtra",
+            pin: c.pincode || "411001",
+            pincode: c.pincode || "411001",
+            landmark: c.addressLandmark || "",
+          },
+          kycType: c.kycType === "PAN" ? "PAN" : c.kycType === "VOTER_ID" ? "Voter ID" : c.kycType === "DRIVING_LICENCE" ? "Driving Licence" : "Aadhaar",
+          kycNumber: c.kycNumber || "",
+          nominee: {
+            name: c.nomineeName || "",
+            relationship: c.nomineeRelationship || "",
+            mobile: c.nomineeMobile || "",
+            address: c.nomineeAddress || "",
+          },
+          guarantor: {
+            name: c.guarantorName || "",
+            relationship: c.guarantorRelationship || "",
+            mobile: c.guarantorMobile || "",
+            address: c.guarantorAddress || "",
+          },
+          status: c.status === "BLOCKED" ? "Blocked" : c.status === "INACTIVE" ? "Inactive" : "Active",
+          createdAt: c.createdAt ? String(c.createdAt).slice(0, 10) : today,
+          photoHue: (idx * 37) % 360,
+        }));
+        setCustomers(mappedCustomers);
 
-    async function loadBackendData() {
-      try {
-        const [custRes, loanRes, payRes, visitRes, closingRes, rctRes] = await Promise.allSettled([
-          customerApi.getCustomers({ limit: 1000 }),
-          loanApi.getLoans({ limit: 1000 }),
-          paymentApi.getPayments({ limit: 1000 }),
-          visitsApi.getVisits({ limit: 1000 }),
-          dailyClosingApi.getDailyClosings({ limit: 100 }),
-          receiptsApi.getReceipts({ limit: 1000 }),
-        ]);
-
-        if (!isMounted) return;
-
-        // 1. Sync Customers
-        if (custRes.status === "fulfilled" && Array.isArray(custRes.value.data)) {
-          const rawCustomers = custRes.value.data as any[];
-          if (rawCustomers.length > 0) {
-            const mappedCustomers: Customer[] = rawCustomers.map((c, idx) => ({
-              id: c.customerCode || c.id,
-              name: c.fullName || c.name || "Unnamed",
-              guardianName: c.guardianName || "",
-              mobile: c.mobile || "",
-              altMobile: c.alternateMobile || c.altMobile || "",
-              dob: c.dateOfBirth || c.dob || "",
-              gender: c.gender === "FEMALE" ? "Female" : c.gender === "OTHER" ? "Other" : "Male",
-              occupation: c.occupation || "Employed",
-              monthlyIncome: Number(c.monthlyIncome) || 0,
-              address: {
-                house: c.addressHouse || "",
-                area: c.addressArea || (typeof c.address === "string" ? c.address : ""),
-                city: c.city || "Pune",
-                district: c.district || "Pune",
-                state: c.state || "Maharashtra",
-                pin: c.pincode || "411001",
-                pincode: c.pincode || "411001",
-                landmark: c.addressLandmark || "",
-              },
-              kycType: c.kycType === "PAN" ? "PAN" : c.kycType === "VOTER_ID" ? "Voter ID" : c.kycType === "DRIVING_LICENCE" ? "Driving Licence" : "Aadhaar",
-              kycNumber: c.kycNumber || "",
-              nominee: {
-                name: c.nomineeName || "",
-                relationship: c.nomineeRelationship || "",
-                mobile: c.nomineeMobile || "",
-                address: c.nomineeAddress || "",
-              },
-              guarantor: {
-                name: c.guarantorName || "",
-                relationship: c.guarantorRelationship || "",
-                mobile: c.guarantorMobile || "",
-                address: c.guarantorAddress || "",
-              },
-              status: c.status === "BLOCKED" ? "Blocked" : c.status === "INACTIVE" ? "Inactive" : "Active",
-              createdAt: c.createdAt ? String(c.createdAt).slice(0, 10) : today,
-              photoHue: (idx * 37) % 360,
-            }));
-            setCustomers(mappedCustomers);
-
-            const mappedAccounts: Account[] = mappedCustomers.map((c, idx) => ({
-              id: `ACC-${String(idx + 1).padStart(6, "0")}`,
-              customerId: c.id,
-              creditLimit: Math.max(50000, c.monthlyIncome * 3),
-              status: "Active",
-              openedAt: c.createdAt,
-            }));
-            setAccounts(mappedAccounts);
-          }
-        }
-
-        // 2. Sync Loans & EMIs
-        if (loanRes.status === "fulfilled" && Array.isArray(loanRes.value.data)) {
-          const rawLoans = loanRes.value.data as any[];
-          if (rawLoans.length > 0) {
-            const mappedLoans: Loan[] = [];
-            const mappedEmis: Emi[] = [];
-
-            rawLoans.forEach((l, idx) => {
-              const loanId = l.loanNumber || l.id;
-              const customerId = l.customer?.customerCode || l.customerId;
-              const emiAmt = Number(l.emiAmount) || 0;
-              const prin = Number(l.principalAmount) || 0;
-              const totPay = Number(l.totalPayable) || 0;
-              const totInt = Number(l.totalInterest) || (totPay - prin);
-
-              mappedLoans.push({
-                id: loanId,
-                customerId,
-                accountId: `ACC-${String(idx + 1).padStart(6, "0")}`,
-                principal: prin,
-                interestRate: Number(l.interestRate) || 0,
-                interestMethod: l.interestType === "REDUCING" ? "Reducing Balance" : "Flat",
-                processingFee: Number(l.processingFee) || 0,
-                insurance: Number(l.insurance) || 0,
-                tenure: Number(l.tenure) || 12,
-                frequency: l.frequency === "DAILY" ? "Daily" : l.frequency === "WEEKLY" ? "Weekly" : "Monthly",
-                emiAmount: emiAmt,
-                totalInterest: totInt,
-                totalPayable: totPay,
-                startDate: l.startDate ? String(l.startDate).slice(0, 10) : today,
-                firstEmiDate: l.firstDueDate ? String(l.firstDueDate).slice(0, 10) : today,
-                endDate: l.maturityDate ? String(l.maturityDate).slice(0, 10) : today,
-                status: l.status === "CLOSED" ? "Closed" : l.status === "OVERDUE" ? "Overdue" : "Active",
-                purpose: l.purpose || "Personal / Business",
-                disbursementMethod: (l.disbursementMethod as any) || "Bank Transfer",
-                bankTransactionId: l.bankTransactionId || undefined,
-              });
-
-              if (Array.isArray(l.installments)) {
-                l.installments.forEach((inst: any) => {
-                  mappedEmis.push({
-                    id: inst.id,
-                    loanId,
-                    customerId,
-                    emiNo: inst.installmentNumber,
-                    dueDate: inst.dueDate ? String(inst.dueDate).slice(0, 10) : today,
-                    amount: Number(inst.totalAmount) || 0,
-                    paid: Number(inst.paidAmount) || 0,
-                    status: inst.status === "PAID" ? "Paid" : inst.status === "PARTIAL" ? "Partial" : inst.status === "OVERDUE" ? "Overdue" : "Due",
-                    lateFee: Number(inst.lateFee) || 0,
-                    lateFeePaid: Number(inst.lateFeePaid) || 0,
-                    lateFeeWaived: Boolean(inst.lateFeeWaived),
-                  });
-                });
-              }
-            });
-
-            setLoans(mappedLoans);
-            if (mappedEmis.length > 0) {
-              setEmis(mappedEmis);
-            }
-          }
-        }
-
-        // 3. Sync Payments
-        if (payRes.status === "fulfilled" && Array.isArray(payRes.value.data)) {
-          const rawPayments = payRes.value.data as any[];
-          if (rawPayments.length > 0) {
-            const mappedPayments: Payment[] = rawPayments.map((p) => ({
-              id: p.paymentNumber || p.id,
-              receiptId: p.receipt?.receiptNumber || `RCP-${p.paymentNumber || p.id}`,
-              loanId: p.loan?.loanNumber || p.loanId,
-              customerId: p.customer?.customerCode || p.customerId,
-              emiId: p.emiId || "",
-              amount: Number(p.amount) || 0,
-              date: p.paymentDate ? String(p.paymentDate).slice(0, 10) : today,
-              method: (p.paymentMethod === "UPI" ? "UPI" : p.paymentMethod === "BANK_TRANSFER" ? "Bank" : "Cash") as PaymentMethod,
-              notes: p.notes || "",
-              collectedBy: p.createdBy?.name || "Operations Staff",
-              reversed: Boolean(p.isReversed),
-              reversalReason: p.reversalReason || "",
-            }));
-            setPayments(mappedPayments);
-          }
-        }
-
-        // 4. Sync Receipts
-        if (rctRes.status === "fulfilled" && Array.isArray(rctRes.value.data)) {
-          const rawReceipts = rctRes.value.data as any[];
-          if (rawReceipts.length > 0) {
-            const mappedReceipts: Receipt[] = rawReceipts.map((r, idx) => ({
-              id: r.receiptNumber || r.id || `RCT-${String(idx + 1).padStart(6, "0")}`,
-              paymentId: r.payment?.paymentNumber || r.paymentId,
-              loanId: r.loan?.loanNumber || r.loanId,
-              customerId: r.payment?.customer?.customerCode || r.loan?.customer?.customerCode || "",
-              amount: Number(r.payment?.amount) || 0,
-              date: r.generatedAt ? String(r.generatedAt).slice(0, 10) : today,
-              method: (r.payment?.paymentMethod === "UPI" ? "UPI" : r.payment?.paymentMethod === "BANK_TRANSFER" ? "Bank" : "Cash") as PaymentMethod,
-              status: (r.status === "CANCELLED" ? "Cancelled" : "Issued") as "Cancelled" | "Issued",
-            }));
-            setReceipts(mappedReceipts);
-          }
-        }
-
-        // 5. Sync Visits
-        if (visitRes.status === "fulfilled" && Array.isArray(visitRes.value.data)) {
-          const rawVisits = visitRes.value.data as any[];
-          if (rawVisits.length > 0) {
-            const mappedVisits: Visit[] = rawVisits.map((v) => ({
-              id: v.id,
-              customerId: v.customer?.customerCode || v.customerId,
-              loanId: v.loan?.loanNumber || v.loanId,
-              date: v.visitDate ? String(v.visitDate).slice(0, 10) : today,
-              status: v.status === "VISITED" ? "Visited" : v.status === "PAID" ? "Paid" : v.status === "PARTIALLY_PAID" ? "Partially Paid" : v.status === "NOT_PAID" ? "Not Paid" : "Planned",
-              purpose: v.purpose || "Collection Follow-up",
-              notes: v.notes || "",
-              location: v.location || "",
-              dueAmount: Number(v.dueAmount) || 0,
-              collected: Number(v.collected) || 0,
-              nextVisit: v.nextVisit || undefined,
-            }));
-            setVisits(mappedVisits);
-          }
-        }
-
-        // 6. Sync Daily Closings
-        if (closingRes.status === "fulfilled" && Array.isArray(closingRes.value.data)) {
-          const rawClosings = closingRes.value.data as any[];
-          if (rawClosings.length > 0) {
-            const mappedClosings: DailyClosing[] = rawClosings.map((dc) => ({
-              id: dc.id,
-              date: dc.closingDate ? String(dc.closingDate).slice(0, 10) : today,
-              totalDue: Number(dc.totalDue || dc.totalCollections) || 0,
-              totalCollected: Number(dc.totalCollected || dc.totalCollections) || 0,
-              shortfall: Number(dc.shortfall) || 0,
-              collectionRate: Number(dc.collectionRate) || 100,
-              cashAmount: Number(dc.cashAmount) || 0,
-              cashCount: Number(dc.cashCount) || 0,
-              upiAmount: Number(dc.upiAmount) || 0,
-              upiCount: Number(dc.upiCount) || 0,
-              bankAmount: Number(dc.bankAmount) || 0,
-              bankCount: Number(dc.bankCount) || 0,
-              transactionsCount: Number(dc.transactionsCount || dc.totalTransactions) || 0,
-              visitsCount: Number(dc.visitsCount) || 0,
-              status: (dc.status === "CLOSED" ? "Closed" : "Open") as "Closed" | "Open",
-              closedAt: dc.closedAt || undefined,
-              closedBy: dc.closedBy || "Admin",
-              notes: dc.notes || undefined,
-            }));
-            setDailyClosings(mappedClosings);
-          }
-        }
-      } catch (err) {
-        console.warn("Could not sync authoritative backend data:", err);
+        const mappedAccounts: Account[] = mappedCustomers.map((c, idx) => ({
+          id: `ACC-${String(idx + 1).padStart(6, "0")}`,
+          customerId: c.id,
+          creditLimit: Math.max(50000, c.monthlyIncome * 3),
+          status: "Active",
+          openedAt: c.createdAt,
+        }));
+        setAccounts(mappedAccounts);
       }
+
+      // 2. Sync Loans & EMIs
+      if (loanRes.status === "fulfilled" && Array.isArray(loanRes.value.data)) {
+        const rawLoans = loanRes.value.data as any[];
+        const mappedLoans: Loan[] = [];
+        const mappedEmis: Emi[] = [];
+
+        rawLoans.forEach((l, idx) => {
+          const loanId = l.loanNumber || l.id;
+          const customerId = l.customer?.customerCode || l.customerId;
+          const emiAmt = Number(l.emiAmount) || 0;
+          const prin = Number(l.principalAmount) || 0;
+          const totPay = Number(l.totalPayable) || 0;
+          const totInt = Number(l.totalInterest) || (totPay - prin);
+
+          mappedLoans.push({
+            id: loanId,
+            customerId,
+            accountId: `ACC-${String(idx + 1).padStart(6, "0")}`,
+            principal: prin,
+            interestRate: Number(l.interestRate) || 0,
+            interestMethod: l.interestType === "REDUCING" ? "Reducing Balance" : "Flat",
+            processingFee: Number(l.processingFee) || 0,
+            insurance: Number(l.insurance) || 0,
+            tenure: Number(l.tenure) || 12,
+            frequency: l.frequency === "DAILY" ? "Daily" : l.frequency === "WEEKLY" ? "Weekly" : "Monthly",
+            emiAmount: emiAmt,
+            totalInterest: totInt,
+            totalPayable: totPay,
+            startDate: l.startDate ? String(l.startDate).slice(0, 10) : today,
+            firstEmiDate: l.firstDueDate ? String(l.firstDueDate).slice(0, 10) : today,
+            endDate: l.maturityDate ? String(l.maturityDate).slice(0, 10) : today,
+            status: l.status === "CLOSED" ? "Closed" : l.status === "OVERDUE" ? "Overdue" : "Active",
+            purpose: l.purpose || "Personal / Business",
+            disbursementMethod: (l.disbursementMethod as any) || "Bank Transfer",
+            bankTransactionId: l.bankTransactionId || undefined,
+          });
+
+          if (Array.isArray(l.installments)) {
+            l.installments.forEach((inst: any) => {
+              mappedEmis.push({
+                id: inst.id,
+                loanId,
+                customerId,
+                emiNo: inst.installmentNumber,
+                dueDate: inst.dueDate ? String(inst.dueDate).slice(0, 10) : today,
+                amount: Number(inst.totalAmount) || 0,
+                paid: Number(inst.paidAmount) || 0,
+                status: inst.status === "PAID" ? "Paid" : inst.status === "PARTIAL" ? "Partial" : inst.status === "OVERDUE" ? "Overdue" : "Due",
+                lateFee: Number(inst.lateFee) || 0,
+                lateFeePaid: Number(inst.lateFeePaid) || 0,
+                lateFeeWaived: Boolean(inst.lateFeeWaived),
+              });
+            });
+          }
+        });
+
+        setLoans(mappedLoans);
+        setEmis(mappedEmis);
+      }
+
+      // 3. Sync Payments
+      if (payRes.status === "fulfilled" && Array.isArray(payRes.value.data)) {
+        const rawPayments = payRes.value.data as any[];
+        const mappedPayments: Payment[] = rawPayments.map((p) => ({
+          id: p.paymentNumber || p.id,
+          receiptId: p.receipt?.receiptNumber || `RCP-${p.paymentNumber || p.id}`,
+          loanId: p.loan?.loanNumber || p.loanId,
+          customerId: p.customer?.customerCode || p.customerId,
+          emiId: p.emiId || "",
+          amount: Number(p.amount) || 0,
+          date: p.paymentDate ? String(p.paymentDate).slice(0, 10) : today,
+          method: (p.paymentMethod === "UPI" ? "UPI" : p.paymentMethod === "BANK_TRANSFER" ? "Bank" : "Cash") as PaymentMethod,
+          notes: p.notes || "",
+          collectedBy: p.createdBy?.name || "Operations Staff",
+          reversed: Boolean(p.isReversed),
+          reversalReason: p.reversalReason || "",
+        }));
+        setPayments(mappedPayments);
+      }
+
+      // 4. Sync Receipts
+      if (rctRes.status === "fulfilled" && Array.isArray(rctRes.value.data)) {
+        const rawReceipts = rctRes.value.data as any[];
+        const mappedReceipts: Receipt[] = rawReceipts.map((r, idx) => ({
+          id: r.receiptNumber || r.id || `RCT-${String(idx + 1).padStart(6, "0")}`,
+          paymentId: r.payment?.paymentNumber || r.paymentId,
+          loanId: r.loan?.loanNumber || r.loanId,
+          customerId: r.payment?.customer?.customerCode || r.loan?.customer?.customerCode || "",
+          amount: Number(r.payment?.amount) || 0,
+          date: r.generatedAt ? String(r.generatedAt).slice(0, 10) : today,
+          method: (r.payment?.paymentMethod === "UPI" ? "UPI" : r.payment?.paymentMethod === "BANK_TRANSFER" ? "Bank" : "Cash") as PaymentMethod,
+          status: (r.status === "CANCELLED" ? "Cancelled" : "Issued") as "Cancelled" | "Issued",
+        }));
+        setReceipts(mappedReceipts);
+      }
+
+      // 5. Sync Visits
+      if (visitRes.status === "fulfilled" && Array.isArray(visitRes.value.data)) {
+        const rawVisits = visitRes.value.data as any[];
+        const mappedVisits: Visit[] = rawVisits.map((v) => ({
+          id: v.id,
+          customerId: v.customer?.customerCode || v.customerId,
+          loanId: v.loan?.loanNumber || v.loanId,
+          date: v.visitDate ? String(v.visitDate).slice(0, 10) : today,
+          status: v.status === "VISITED" ? "Visited" : v.status === "PAID" ? "Paid" : v.status === "PARTIALLY_PAID" ? "Partially Paid" : v.status === "NOT_PAID" ? "Not Paid" : "Planned",
+          purpose: v.purpose || "Collection Follow-up",
+          notes: v.notes || "",
+          location: v.location || "",
+          dueAmount: Number(v.dueAmount) || 0,
+          collected: Number(v.collected) || 0,
+          nextVisit: v.nextVisit || undefined,
+        }));
+        setVisits(mappedVisits);
+      }
+
+      // 6. Sync Daily Closings
+      if (closingRes.status === "fulfilled" && Array.isArray(closingRes.value.data)) {
+        const rawClosings = closingRes.value.data as any[];
+        const mappedClosings: DailyClosing[] = rawClosings.map((dc) => ({
+          id: dc.id,
+          date: dc.closingDate ? String(dc.closingDate).slice(0, 10) : today,
+          totalDue: Number(dc.totalDue || dc.totalCollections) || 0,
+          totalCollected: Number(dc.totalCollected || dc.totalCollections) || 0,
+          shortfall: Number(dc.shortfall) || 0,
+          collectionRate: Number(dc.collectionRate) || 100,
+          cashAmount: Number(dc.cashAmount) || 0,
+          cashCount: Number(dc.cashCount) || 0,
+          upiAmount: Number(dc.upiAmount) || 0,
+          upiCount: Number(dc.upiCount) || 0,
+          bankAmount: Number(dc.bankAmount) || 0,
+          bankCount: Number(dc.bankCount) || 0,
+          transactionsCount: Number(dc.transactionsCount || dc.totalTransactions) || 0,
+          visitsCount: Number(dc.visitsCount) || 0,
+          status: (dc.status === "CLOSED" ? "Closed" : "Open") as "Closed" | "Open",
+          closedAt: dc.closedAt || undefined,
+          closedBy: dc.closedBy || "Admin",
+          notes: dc.notes || undefined,
+        }));
+        setDailyClosings(mappedClosings);
+      }
+    } catch (err) {
+      console.warn("Could not sync authoritative backend data:", err);
+    } finally {
+      setLoading(false);
     }
+  }, [today]);
 
-    void loadBackendData();
+  useEffect(() => {
+    if (loggedIn) {
+      void refreshData();
+    }
+  }, [loggedIn, refreshData]);
 
-    return () => {
-      isMounted = false;
-    };
-  }, [loggedIn, today]);
-
-  // ── Notifications (always computed, not persisted) ────────────────────────
-  const initialNotifications = useMemo(() => {
-    const overdueEmis = seed.emis.filter((e) => e.status === "Overdue").length;
-    const dueToday = new Set(seed.emis.filter((e) => e.dueDate === today).map((e) => e.customerId)).size;
-    const collectedToday = seed.payments
+  // ── Notifications (computed from live state) ──────────────────────────────
+  const [readNotifIds, setReadNotifIds] = useState<Set<string>>(new Set());
+  const notifications = useMemo(() => {
+    const overdueEmis = emis.filter((e) => e.status === "Overdue").length;
+    const dueToday = new Set(emis.filter((e) => e.dueDate === today).map((e) => e.customerId)).size;
+    const collectedToday = payments
       .filter((p) => p.date.slice(0, 10) === today)
       .reduce((s, p) => s + p.amount, 0);
-    const partial = seed.emis.find((e) => e.status === "Partial");
+    const partial = emis.find((e) => e.status === "Partial");
     const partialCustomer = partial
-      ? seed.customers.find((c) => c.id === partial.customerId)?.name.split(" ")[0]
+      ? customers.find((c) => c.id === partial.customerId)?.name.split(" ")[0]
       : undefined;
-    return buildNotifications({
+    const raw = buildNotifications({
       overdueEmis,
       dueToday,
       collectedToday,
       partialCustomer,
       partialAmount: partial ? partial.amount - partial.paid : 0,
     });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const [notifications, setNotifications] = useState<AppNotification[]>(initialNotifications);
-
-  // ── Persist to localStorage on every state change ─────────────────────────
-  useEffect(() => {
-    const data: PersistedState = {
-      customers,
-      accounts,
-      loans,
-      emis,
-      payments,
-      receipts,
-      visits,
-      limitHistory,
-      documents,
-      bankDetails,
-      disbursements,
-      promiseToPay,
-      earlyClosures,
-      dailyClosings,
-      counters,
-      admin,
-      settings,
-    };
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch {
-      // Ignore storage quota errors
-    }
-  }, [
-    customers, accounts, loans, emis, payments, receipts, visits,
-    limitHistory, documents, bankDetails, disbursements, promiseToPay, earlyClosures, dailyClosings, counters, admin, settings,
-  ]);
+    return raw.map((n) => ({
+      ...n,
+      read: readNotifIds.has(n.id) || n.read,
+    }));
+  }, [emis, payments, customers, today, readNotifIds]);
 
   // ── ID helpers ────────────────────────────────────────────────────────────
   const nextId = useCallback((key: keyof CounterState) => {
@@ -706,12 +593,36 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   // ── Actions ───────────────────────────────────────────────────────────────
 
   const addCustomer = useCallback<StoreValue["addCustomer"]>(
-    (input) => {
-      const n = counters.customer + 1;
-      const a = counters.account + 1;
-      setCounters((c) => ({ ...c, customer: n, account: a }));
+    async (input) => {
+      const cleanAddress = [input.address.house, input.address.area, input.address.landmark]
+        .map((s) => (s || "").trim())
+        .filter(Boolean)
+        .join(", ") || "Main Street";
+
+      // 1. Persist directly to backend MySQL database first
+      const res = await customerApi.createCustomer({
+        fullName: input.name.trim(),
+        mobile: input.mobile.trim(),
+        alternateMobile: input.altMobile?.trim() || undefined,
+        address: cleanAddress,
+        city: (input.address.city || "Pune").trim(),
+        state: (input.address.state || "Maharashtra").trim(),
+        pincode: (input.address.pincode || input.address.pin || "411001").trim(),
+        occupation: input.occupation?.trim() || undefined,
+        monthlyIncome: input.monthlyIncome || undefined,
+        kycType: input.kycType as any,
+        kycNumber: input.kycNumber?.trim() || undefined,
+        guarantorName: input.guarantor?.name?.trim() || undefined,
+        guarantorMobile: input.guarantor?.mobile?.trim() || undefined,
+        guarantorRelationship: input.guarantor?.relationship?.trim() || undefined,
+        guarantorAddress: input.guarantor?.address?.trim() || undefined,
+      });
+
+      const dbCust = res?.data as any;
+      const realId = dbCust?.customerCode || dbCust?.id || padId("CUS", counters.customer + 1);
+
       const customer: Customer = {
-        id: padId("CUS", n),
+        id: realId,
         name: input.name,
         guardianName: input.guardianName,
         mobile: input.mobile,
@@ -727,63 +638,26 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         guarantor: input.guarantor,
         status: "Active",
         createdAt: today,
-        photoHue: (n * 37) % 360,
+        photoHue: ((counters.customer + 1) * 37) % 360,
       };
+
       const account: Account = {
-        id: padId("ACC", a),
+        id: padId("ACC", counters.account + 1),
         customerId: customer.id,
         creditLimit: Math.max(0, safe(input.creditLimit)),
         status: "Active",
         openedAt: today,
       };
+
       setCustomers((prev) => [customer, ...prev]);
       setAccounts((prev) => [account, ...prev]);
+      setCounters((c) => ({ ...c, customer: c.customer + 1, account: c.account + 1 }));
 
-      // Asynchronously sync with backend REST API
-      const cleanAddress = [customer.address.house, customer.address.area, customer.address.landmark]
-        .map((s) => (s || "").trim())
-        .filter(Boolean)
-        .join(", ") || "Main Street";
-
-      customerApi
-        .createCustomer({
-          fullName: customer.name.trim(),
-          mobile: customer.mobile.trim(),
-          alternateMobile: customer.altMobile?.trim() || undefined,
-          address: cleanAddress,
-          city: (customer.address.city || "Pune").trim(),
-          state: (customer.address.state || "Maharashtra").trim(),
-          pincode: (customer.address.pincode || customer.address.pin || "411001").trim(),
-          occupation: customer.occupation?.trim() || undefined,
-          monthlyIncome: customer.monthlyIncome || undefined,
-          kycType: customer.kycType as any,
-          kycNumber: customer.kycNumber?.trim() || undefined,
-          guarantorName: customer.guarantor?.name?.trim() || undefined,
-          guarantorMobile: customer.guarantor?.mobile?.trim() || undefined,
-          guarantorRelationship: customer.guarantor?.relationship?.trim() || undefined,
-          guarantorAddress: customer.guarantor?.address?.trim() || undefined,
-        })
-        .then((res) => {
-          if (res?.data) {
-            const dbCust = res.data as any;
-            const realId = dbCust.customerCode || dbCust.id;
-            if (realId && realId !== customer.id) {
-              setCustomers((prev) =>
-                prev.map((c) => (c.id === customer.id ? { ...c, id: realId } : c))
-              );
-              setAccounts((prev) =>
-                prev.map((a) => (a.customerId === customer.id ? { ...a, customerId: realId } : a))
-              );
-            }
-          }
-        })
-        .catch((err) => {
-          console.warn("Backend customer sync pending:", err?.message);
-        });
+      void refreshData();
 
       return { customer, account };
     },
-    [counters.customer, counters.account, today],
+    [counters.customer, counters.account, today, refreshData],
   );
 
   const updateCustomer = useCallback<StoreValue["updateCustomer"]>((id, patch) => {
@@ -791,10 +665,27 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addLoan = useCallback<StoreValue["addLoan"]>(
-    (input) => {
-      const n = counters.loan + 1;
-      setCounters((c) => ({ ...c, loan: n }));
-      const account = accounts.find((a) => a.customerId === input.customerId)!;
+    async (input) => {
+      // 1. Persist directly to backend MySQL database first
+      const res = await loanApi.createLoan({
+        customerId: input.customerId,
+        principalAmount: input.principal,
+        interestRate: input.interestRate,
+        interestType: String(input.interestMethod).toLowerCase().includes("reduc") ? "REDUCING" : "FLAT",
+        tenure: input.tenure,
+        frequency: (input.frequency ? input.frequency.toUpperCase() : "MONTHLY") as any,
+        startDate: input.startDate,
+        firstDueDate: input.firstEmiDate,
+        processingFee: safe(input.processingFee),
+        purpose: input.purpose,
+        disbursementMethod: input.disbursementMethod,
+        bankTransactionId: input.bankTransactionId,
+      });
+
+      const dbLoan = res?.data as any;
+      const realLoanId = dbLoan?.loanNumber || dbLoan?.id || padId("LN", counters.loan + 1);
+
+      const account = accounts.find((a) => a.customerId === input.customerId);
       const { totalInterest, totalPayable, emiAmount } = computeSchedule({
         principal: input.principal,
         rate: input.interestRate,
@@ -803,12 +694,11 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         frequency: input.frequency,
       });
 
-      // Correct end date for all frequencies
       const emiDates = generateEmiDates(input.firstEmiDate, input.frequency, input.tenure);
       const endDate = emiDates[emiDates.length - 1] ?? input.firstEmiDate;
 
       const loan: Loan = {
-        id: padId("LN", n),
+        id: realLoanId,
         customerId: input.customerId,
         accountId: account?.id ?? "",
         principal: input.principal,
@@ -818,9 +708,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         insurance: safe(input.insurance),
         tenure: input.tenure,
         frequency: input.frequency,
-        emiAmount,
-        totalInterest,
-        totalPayable,
+        emiAmount: Number(dbLoan?.emiAmount) || emiAmount,
+        totalInterest: Number(dbLoan?.totalInterest) || totalInterest,
+        totalPayable: Number(dbLoan?.totalPayable) || totalPayable,
         startDate: input.startDate,
         firstEmiDate: input.firstEmiDate,
         endDate,
@@ -830,72 +720,36 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         bankTransactionId: input.bankTransactionId,
       };
 
-      // Generate schedule using correct date logic for all frequencies
-      const schedule: Emi[] = [];
-      let e = counters.emi;
-      for (let i = 0; i < input.tenure; i++) {
-        e += 1;
-        const dueDate = emiDates[i]!;
-        schedule.push({
-          id: padId("EMI", e),
-          loanId: loan.id,
-          customerId: loan.customerId,
-          emiNo: i + 1,
-          dueDate,
-          amount: emiAmount,
-          paid: 0,
-          status: dueDate === today ? "Due" : dueDate < today ? "Overdue" : "Upcoming",
-        });
-      }
-      setCounters((c) => ({ ...c, emi: e }));
       setLoans((prev) => [loan, ...prev]);
-      setEmis((prev) => [...prev, ...schedule]);
+      setCounters((c) => ({ ...c, loan: c.loan + 1 }));
 
-      // Asynchronously sync with backend REST API
-      loanApi
-        .createLoan({
-          customerId: input.customerId,
-          principalAmount: input.principal,
-          interestRate: input.interestRate,
-          interestType: String(input.interestMethod).toLowerCase().includes("reduc") ? "REDUCING" : "FLAT",
-          tenure: input.tenure,
-          frequency: (input.frequency ? input.frequency.toUpperCase() : "MONTHLY") as any,
-          startDate: input.startDate,
-          firstDueDate: input.firstEmiDate,
-          processingFee: safe(input.processingFee),
-          purpose: input.purpose,
-          disbursementMethod: input.disbursementMethod,
-          bankTransactionId: input.bankTransactionId,
-        })
-        .catch((err) => {
-          console.warn("Backend loan sync pending:", err?.message);
-        });
+      await refreshData();
 
       return loan;
     },
-    [accounts, counters.loan, counters.emi, today],
+    [accounts, counters.loan, refreshData],
   );
 
   const recordPayment = useCallback<StoreValue["recordPayment"]>(
-    (input) => {
-      const pNum = counters.payment + 1;
-      const rNum = counters.receipt + 1;
-
-      const paymentId = padId("PAY", pNum);
-      const receiptId = `${settings.receiptPrefix}-${String(rNum).padStart(5, "0")}`;
-      const nowIso = new Date().toISOString();
+    async (input) => {
       const amount = Math.max(0, safe(input.amount));
 
-      // Look up target EMI before state changes
-      const targetEmi = emis.find((e) => e.id === input.emiId);
-      const targetRemaining = targetEmi ? targetEmi.amount - targetEmi.paid : 0;
+      // 1. Persist directly to backend MySQL database first
+      const res = await paymentApi.recordPayment({
+        loanId: input.loanId,
+        amount,
+        paymentMethod: input.method,
+        notes: input.notes || "EMI Collection",
+      });
 
-      const lateFeePaid = Math.min(amount, Math.max(0, safe(input.lateFeePaid)));
-      const emiPaymentAmount = Math.max(0, amount - lateFeePaid);
+      const dbPay = res?.data as any;
+      const realPaymentId = dbPay?.paymentNumber || dbPay?.id || padId("PAY", counters.payment + 1);
+      const realReceiptId = dbPay?.receipt?.receiptNumber || `${settings.receiptPrefix}-${String(counters.receipt + 1).padStart(5, "0")}`;
+      const nowIso = new Date().toISOString();
 
       const payment: Payment = {
-        id: paymentId,
-        receiptId,
+        id: realPaymentId,
+        receiptId: realReceiptId,
         customerId: input.customerId,
         loanId: input.loanId,
         emiId: input.emiId,
@@ -906,128 +760,31 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         collectedBy: admin.name,
         reversed: false,
         reversalReason: "",
-        lateFeePaid: lateFeePaid > 0 ? lateFeePaid : undefined,
+        lateFeePaid: input.lateFeePaid,
         lateFeeWaived: input.lateFeeWaived,
       };
+
       const receipt: Receipt = {
-        id: receiptId,
-        paymentId,
+        id: realReceiptId,
+        paymentId: realPaymentId,
         customerId: input.customerId,
         loanId: input.loanId,
         amount,
         method: input.method,
         date: nowIso,
         status: "Issued",
-        lateFeePaid: lateFeePaid > 0 ? lateFeePaid : undefined,
+        lateFeePaid: input.lateFeePaid,
       };
-
-      // ── Apply payment to EMIs ─────────────────────────────────────────────
-      setEmis((prev) => {
-        const excessAction = input.excessAction ?? "next";
-
-        if (emiPaymentAmount <= targetRemaining || excessAction === "advance") {
-          // Simple: apply only to target EMI (capped at remaining)
-          const apply = Math.min(emiPaymentAmount, targetRemaining);
-          return prev.map((e) => {
-            if (e.id !== input.emiId) return e;
-            const paid = e.paid + apply;
-            const status: Emi["status"] =
-              paid >= e.amount ? "Paid" : paid > 0 ? "Partial" : e.dueDate < today ? "Overdue" : e.dueDate === today ? "Due" : "Upcoming";
-            return {
-              ...e,
-              paid,
-              status,
-              lateFeePaid: (e.lateFeePaid ?? 0) + lateFeePaid,
-              lateFeeWaived: input.lateFeeWaived || e.lateFeeWaived,
-            };
-          });
-        }
-
-        // "next" — spill excess into subsequent unpaid EMIs
-        let remaining = emiPaymentAmount;
-        const targetIdx = prev.findIndex((e) => e.id === input.emiId);
-        const order = prev
-          .map((e, i) => ({ e, i }))
-          .filter(({ e }) => e.loanId === input.loanId && e.paid < e.amount)
-          .sort((a, b) => (a.i === targetIdx ? -1 : b.i === targetIdx ? 1 : a.e.emiNo - b.e.emiNo));
-        const updates = new Map<string, Emi>();
-        for (const { e } of order) {
-          if (remaining <= 0) break;
-          const need = e.amount - e.paid;
-          const apply = Math.min(need, remaining);
-          remaining -= apply;
-          const paid = e.paid + apply;
-          const status: Emi["status"] =
-            paid >= e.amount ? "Paid" : paid > 0 ? "Partial" : e.dueDate < today ? "Overdue" : e.dueDate === today ? "Due" : "Upcoming";
-          const isTarget = e.id === input.emiId;
-          updates.set(e.id, {
-            ...e,
-            paid,
-            status,
-            ...(isTarget && {
-              lateFeePaid: (e.lateFeePaid ?? 0) + lateFeePaid,
-              lateFeeWaived: input.lateFeeWaived || e.lateFeeWaived,
-            }),
-          });
-        }
-        return prev.map((e) => updates.get(e.id) ?? e);
-      });
 
       setPayments((prev) => [payment, ...prev]);
       setReceipts((prev) => [receipt, ...prev]);
+      setCounters((c) => ({ ...c, payment: c.payment + 1, receipt: c.receipt + 1 }));
 
-      // ── Auto-create or update visit for today ─────────────────────────────
-      setVisits((prev) => {
-        const existingIdx = prev.findIndex(
-          (v) => v.loanId === input.loanId && v.date === today,
-        );
-        if (existingIdx >= 0) {
-          return prev.map((v, i) => {
-            if (i !== existingIdx) return v;
-            const newCollected = v.collected + amount;
-            return {
-              ...v,
-              collected: newCollected,
-              status: newCollected >= v.dueAmount ? ("Paid" as const) : ("Partially Paid" as const),
-              paymentId,
-              receiptId,
-            };
-          });
-        }
-        // Create new visit
-        setCounters((c) => ({ ...c, visit: c.visit + 1 }));
-        const newVisit: Visit = {
-          id: padId("VIS", counters.visit + 1),
-          customerId: input.customerId,
-          loanId: input.loanId,
-          date: today,
-          dueAmount: targetRemaining,
-          collected: amount,
-          status: amount >= targetRemaining ? "Paid" : "Partially Paid",
-          notes: input.notes || "",
-          paymentId,
-          receiptId,
-        };
-        return [newVisit, ...prev];
-      });
-
-      setCounters((c) => ({ ...c, payment: pNum, receipt: rNum }));
-
-      // Asynchronously sync with backend REST API
-      paymentApi
-        .recordPayment({
-          loanId: input.loanId,
-          amount,
-          paymentMethod: input.method,
-          notes: input.notes || "EMI Collection",
-        })
-        .catch((err) => {
-          console.warn("Backend payment sync pending:", err?.message);
-        });
+      await refreshData();
 
       return { payment, receipt };
     },
-    [admin.name, counters.payment, counters.receipt, counters.visit, settings.receiptPrefix, today, emis],
+    [admin.name, counters.payment, counters.receipt, settings.receiptPrefix, refreshData],
   );
 
   const reversePayment = useCallback<StoreValue["reversePayment"]>(
@@ -1675,7 +1432,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     },
     logout: () => {
       void authApi.logout();
-      setLoggedIn(false);
+      logout();
     },
     customers,
     accounts,
@@ -1701,6 +1458,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     updateCustomerPhoto,
     addLoan,
     recordPayment,
+    refreshData,
+    loading,
     reversePayment,
     updateCreditLimit,
     upsertVisit,
