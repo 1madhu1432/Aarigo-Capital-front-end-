@@ -261,7 +261,7 @@ function CustomerProfilePage() {
     customerPayments.forEach((p) => {
       events.push({
         id: `evt-pay-${p.id}`,
-        date: p.date.slice(0, 10),
+        date: p.date ? String(p.date).slice(0, 10) : today,
         type: "payment",
         title: p.reversed ? `Payment Reversed: ${p.receiptId}` : `EMI Repayment Received: ${p.receiptId}`,
         desc: `${p.method} • Collected by ${p.collectedBy}${p.notes ? ` • "${p.notes}"` : ""}`,
@@ -274,7 +274,7 @@ function CustomerProfilePage() {
     customerVisits.forEach((v) => {
       events.push({
         id: `evt-vis-${v.id}`,
-        date: v.date,
+        date: v.date ? String(v.date).slice(0, 10) : today,
         type: "visit",
         title: `Doorstep Field Visit: ${v.id}`,
         desc: v.status === "Paid" ? `Collected ${inr(v.collected)}` : `Reason: ${v.reason || "Not Paid"}${v.nextVisit ? ` • Next visit: ${fmtDate(v.nextVisit)}` : ""}`,
@@ -287,7 +287,7 @@ function CustomerProfilePage() {
     customerPtp.forEach((ptp) => {
       events.push({
         id: `evt-ptp-${ptp.id}`,
-        date: ptp.createdAt,
+        date: ptp.createdAt ? String(ptp.createdAt).slice(0, 10) : today,
         type: "ptp",
         title: `Promise-to-Pay Registered (${ptp.status})`,
         desc: `Promised ${inr(ptp.promiseAmount)} on ${fmtDate(ptp.promiseDate)}${ptp.notes ? ` • "${ptp.notes}"` : ""}`,
@@ -361,7 +361,8 @@ function CustomerProfilePage() {
   const renderedApplicationHtml = useMemo(() => {
     if (!customer) return "";
     const templateHtml = settings.documentTemplates?.customer_application || DEFAULT_TEMPLATES.customer_application.defaultHtml;
-    const fullAddress = `${customer.address.house}, ${customer.address.area}, ${customer.address.city}, ${customer.address.district} - ${customer.address.pin}${customer.address.landmark ? ` (Landmark: ${customer.address.landmark})` : ""}`;
+    const a = customer.address || { house: "", area: "", city: "", district: "", state: "", pin: "", landmark: "" };
+    const fullAddress = [a.house, a.area, a.city, a.district, a.pin].filter(Boolean).join(", ") + (a.landmark ? ` (Landmark: ${a.landmark})` : "");
     const nomineeInfo = customer.nominee?.name ? `${customer.nominee.name} (${customer.nominee.relationship || "Nominee"}) - ${customer.nominee.mobile || ""}` : "Not Assigned";
     const guarantorInfo = customer.guarantor?.name ? `${customer.guarantor.name} (${customer.guarantor.relationship || "Guarantor"}) - ${customer.guarantor.mobile || ""}` : "Not Assigned";
 
@@ -400,7 +401,8 @@ function CustomerProfilePage() {
   const renderedStatementHtml = useMemo(() => {
     if (!customer) return "";
     const templateHtml = settings.documentTemplates?.account_statement || DEFAULT_TEMPLATES.account_statement.defaultHtml;
-    const fullAddress = `${customer.address.house}, ${customer.address.area}, ${customer.address.city}, ${customer.address.district} - ${customer.address.pin}`;
+    const a = customer.address || { house: "", area: "", city: "", district: "", state: "", pin: "", landmark: "" };
+    const fullAddress = [a.house, a.area, a.city, a.district, a.pin].filter(Boolean).join(", ");
     const totalBorrowed = customerLoans.reduce((sum, l) => sum + l.principal, 0);
     const totalRepaid = customerPayments.filter((p) => !p.reversed).reduce((sum, p) => sum + p.amount, 0);
     const totalBalance = Math.max(0, customerEmis.reduce((sum, e) => sum + Math.max(0, e.amount - e.paid), 0));

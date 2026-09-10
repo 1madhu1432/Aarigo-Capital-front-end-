@@ -233,6 +233,24 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const [loggedIn, setLoggedIn] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [loans, setLoans] = useState<Loan[]>([]);
+  const [emis, setEmis] = useState<Emi[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [visits, setVisits] = useState<Visit[]>([]);
+  const [limitHistory, setLimitHistory] = useState<CreditLimitChange[]>([]);
+  const [documents, setDocuments] = useState<DocumentFile[]>([]);
+  const [bankDetails, setBankDetails] = useState<BankDetail[]>([]);
+  const [disbursements, setDisbursements] = useState<DisbursementRecord[]>([]);
+  const [promiseToPay, setPromiseToPay] = useState<PromiseToPay[]>([]);
+  const [earlyClosures, setEarlyClosures] = useState<EarlyClosureRecord[]>([]);
+  const [dailyClosings, setDailyClosings] = useState<DailyClosing[]>([]);
+  const [admin, setAdmin] = useState<AdminProfile>(defaultAdmin);
+  const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [counters, setCounters] = useState<CounterState>(DEFAULT_COUNTERS);
+
   // Define logout function to clear auth and reset store
   const logout = useCallback(() => {
     // Remove token
@@ -318,23 +336,6 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       setLoggedIn(false);
     }
   }, []);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loans, setLoans] = useState<Loan[]>([]);
-  const [emis, setEmis] = useState<Emi[]>([]);
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [receipts, setReceipts] = useState<Receipt[]>([]);
-  const [visits, setVisits] = useState<Visit[]>([]);
-  const [limitHistory, setLimitHistory] = useState<CreditLimitChange[]>([]);
-  const [documents, setDocuments] = useState<DocumentFile[]>([]);
-  const [bankDetails, setBankDetails] = useState<BankDetail[]>([]);
-  const [disbursements, setDisbursements] = useState<DisbursementRecord[]>([]);
-  const [promiseToPay, setPromiseToPay] = useState<PromiseToPay[]>([]);
-  const [earlyClosures, setEarlyClosures] = useState<EarlyClosureRecord[]>([]);
-  const [dailyClosings, setDailyClosings] = useState<DailyClosing[]>([]);
-  const [admin, setAdmin] = useState<AdminProfile>(defaultAdmin);
-  const [settings, setSettings] = useState<Settings>(defaultSettings);
-  const [counters, setCounters] = useState<CounterState>(DEFAULT_COUNTERS);
 
   // ── Authoritative Backend Synchronization ─────────────────────────────────
   const refreshData = useCallback(async () => {
@@ -564,9 +565,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       .filter((p) => p.date.slice(0, 10) === today)
       .reduce((s, p) => s + p.amount, 0);
     const partial = emis.find((e) => e.status === "Partial");
-    const partialCustomer = partial
-      ? customers.find((c) => c.id === partial.customerId)?.name.split(" ")[0]
-      : undefined;
+    const foundCust = partial ? customers.find((c) => c.id === partial.customerId) : undefined;
+    const partialCustomer = foundCust?.name ? foundCust.name.split(" ")[0] : undefined;
     const raw = buildNotifications({
       overdueEmis,
       dueToday,

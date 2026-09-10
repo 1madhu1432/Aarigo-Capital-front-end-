@@ -96,12 +96,12 @@ interface CustomerFormErrors {
       const q = query.toLowerCase();
       const acc = accounts.find((a) => a.customerId === c.id);
       const matchesQ =
-        c.name.toLowerCase().includes(q) ||
-        c.id.toLowerCase().includes(q) ||
-        (acc ? acc.id.toLowerCase().includes(q) : false) ||
-        c.mobile.includes(q) ||
-        c.address.city.toLowerCase().includes(q) ||
-        c.address.area.toLowerCase().includes(q);
+        (c.name || "").toLowerCase().includes(q) ||
+        (c.id || "").toLowerCase().includes(q) ||
+        (acc ? (acc.id || "").toLowerCase().includes(q) : false) ||
+        (c.mobile || "").includes(q) ||
+        (c.address?.city || "").toLowerCase().includes(q) ||
+        (c.address?.area || "").toLowerCase().includes(q);
       const matchesStatus = filterStatus === "all" || c.status === filterStatus;
       return matchesQ && matchesStatus;
     }),
@@ -133,21 +133,21 @@ interface CustomerFormErrors {
       const activeLoans = loans.filter((l) => l.customerId === c.id && l.status === "Active").length;
       const overdueEmis = emis.filter((e) => e.customerId === c.id && e.status === "Overdue").length;
       return [
-        c.id,
-        c.name,
-        c.mobile,
+        c.id || "",
+        c.name || "",
+        c.mobile || "",
         c.altMobile || "",
-        c.status,
-        c.occupation,
-        c.monthlyIncome,
-        c.address.area,
-        c.address.city,
-        c.address.district,
-        c.address.state,
-        c.address.pin,
-        c.kycType,
-        c.kycNumber,
-        c.creditLimit,
+        c.status || "Active",
+        c.occupation || "",
+        c.monthlyIncome || 0,
+        c.address?.area || "",
+        c.address?.city || "",
+        c.address?.district || "",
+        c.address?.state || "",
+        c.address?.pin || "",
+        c.kycType || "",
+        c.kycNumber || "",
+        c.creditLimit || 0,
         activeLoans,
         overdueEmis,
       ];
@@ -315,13 +315,13 @@ interface CustomerFormErrors {
                   <div className="flex items-center gap-3">
                     <div
                       className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white shadow-xs"
-                      style={{ backgroundColor: `hsl(${c.photoHue}, 65%, 45%)` }}
+                      style={{ backgroundColor: `hsl(${c.photoHue || 120}, 65%, 45%)` }}
                     >
-                      {c.name.charAt(0)}
+                      {(c.name || "C").charAt(0).toUpperCase()}
                     </div>
                     <div>
                       <CardTitle className="text-sm font-semibold group-hover:text-primary transition-colors">
-                        {c.name}
+                        {c.name || "Unnamed Customer"}
                       </CardTitle>
                       <CardDescription className="text-xs font-mono text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
                         <span>{c.id}</span>
@@ -329,13 +329,13 @@ interface CustomerFormErrors {
                           <span className="text-primary font-semibold">({account.id})</span>
                         )}
                         <span>•</span>
-                        <span>{c.occupation}</span>
+                        <span>{c.occupation || "Employed"}</span>
                       </CardDescription>
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-1">
-                      <StatusBadge status={c.status} />
+                      <StatusBadge status={c.status || "Active"} />
                       {compliance.isCompliant ? (
                         <Badge variant="outline" className="text-[9px] bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30">
                           KYC OK
@@ -371,11 +371,11 @@ interface CustomerFormErrors {
                   <div className="space-y-1 text-muted-foreground text-[11px]">
                     <div className="flex items-center gap-1.5">
                       <Phone className="h-3 w-3 text-muted-foreground shrink-0" />
-                      <span>{c.mobile}</span>
+                      <span>{c.mobile || "—"}</span>
                     </div>
                     <div className="flex items-center gap-1.5 truncate">
                       <MapPin className="h-3 w-3 text-muted-foreground shrink-0" />
-                      <span className='truncate'>{c.address['area']}, {c.address['city']}</span>
+                      <span className='truncate'>{c.address?.area || c.address?.house || ""}{c.address?.city ? `, ${c.address.city}` : ""}</span>
                     </div>
                   </div>
 
