@@ -32,3 +32,6 @@ npm run dev
 ```bash
 npm run build
 ```
+
+## Vercel Deployment
+This repository is configured for immediate zero-config deployment on Vercel. Connect this repository to Vercel and it will automatically build using `npm run build` and output to `.output/public`.
