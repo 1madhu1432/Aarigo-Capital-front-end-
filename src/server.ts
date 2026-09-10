@@ -1,64 +1,61 @@
-import { app } from './app';
-import { env } from './config/env';
-import { logger } from './utils/logger';
-import { prisma } from './lib/prisma';
-import { AuthService } from './services/auth/auth.service';
-import http from 'http';
+import "./lib/error-capture";
 
-let server: http.Server;
+import { consumeLastCapturedError } from "./lib/error-capture";
+import { renderErrorPage } from "./lib/error-page";
 
-async function startServer(): Promise<void> {
+type ServerEntry = {
+  fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
+};
+
+let serverEntryPromise: Promise<ServerEntry> | undefined;
+
+async function getServerEntry(): Promise<ServerEntry> {
+  if (!serverEntryPromise) {
+    serverEntryPromise = import("@tanstack/react-start/server-entry").then(
+      (m) => (m.default ?? m) as ServerEntry,
+    );
+  }
+  return serverEntryPromise;
+}
+
+// h3 swallows in-handler throws into a normal 500 Response with body
+// {"unhandled":true,"message":"HTTPError"} — try/catch alone never fires for those.
+async function normalizeCatastrophicSsrResponse(response: Response): Promise<Response> {
+  if (response.status < 500) return response;
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return response;
+
+  const body = await response.clone().text();
+  if (!isH3SwallowedErrorBody(body)) return response;
+
+  console.error(consumeLastCapturedError() ?? new Error(`h3 swallowed SSR error: ${body}`));
+  return new Response(renderErrorPage(), {
+    status: 500,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+function isH3SwallowedErrorBody(body: string): boolean {
   try {
-    // Attempt DB connection
-    logger.info('Connecting to database...');
-    let dbConnected = false;
-    try {
-      await prisma.$connect();
-      logger.info('Database connection established successfully');
-      dbConnected = true;
-    } catch (dbErr: any) {
-      logger.warn(`Database connection warning: ${dbErr.message}. Starting HTTP server anyway...`);
-    }
-
-    if (dbConnected) {
-      try {
-        await AuthService.ensureInitialAdmin();
-      } catch (adminErr: any) {
-        logger.error(`Initial admin initialization failed: ${adminErr.message}`);
-        process.exit(1);
-      }
-    }
-
-    server = app.listen(env.PORT, () => {
-      logger.info(`=======================================================`);
-      logger.info(`  Aarigo Capital API running on port ${env.PORT}`);
-      logger.info(`  Environment: ${env.NODE_ENV}`);
-      logger.info(`  Health check: http://localhost:${env.PORT}/health`);
-      logger.info(`  API endpoint: http://localhost:${env.PORT}/api`);
-      logger.info(`=======================================================`);
-    });
-
-    // Graceful shutdown handling
-    const shutdown = async (signal: string) => {
-      logger.info(`Received ${signal}. Gracefully shutting down...`);
-      if (server) {
-        server.close(async () => {
-          logger.info('HTTP server closed');
-          await prisma.$disconnect();
-          logger.info('Database client disconnected');
-          process.exit(0);
-        });
-      } else {
-        process.exit(0);
-      }
-    };
-
-    process.on('SIGINT', () => shutdown('SIGINT'));
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-  } catch (error: any) {
-    logger.error('Failed to start server', { error: error.message, stack: error.stack });
-    process.exit(1);
+    const payload = JSON.parse(body) as { unhandled?: unknown; message?: unknown };
+    return payload.unhandled === true && payload.message === "HTTPError";
+  } catch {
+    return false;
   }
 }
 
-startServer();
+export default {
+  async fetch(request: Request, env: unknown, ctx: unknown) {
+    try {
+      const handler = await getServerEntry();
+      const response = await handler.fetch(request, env, ctx);
+      return await normalizeCatastrophicSsrResponse(response);
+    } catch (error) {
+      console.error(error);
+      return new Response(renderErrorPage(), {
+        status: 500,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+  },
+};
